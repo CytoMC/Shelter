@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shelter - MMD Integration</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- MMD Dependencies -->
+    <script src="https://cdn.jsdelivr.net/gh/mrdoob/three.js@r128/examples/js/libs/mmdparser.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/mrdoob/three.js@r128/examples/js/loaders/TGALoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/mrdoob/three.js@r128/examples/js/loaders/MMDLoader.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@300;400;500&display=swap" rel="stylesheet">
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #050505; font-family: 'Quicksand', sans-serif; }
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        .pointer-events-auto { pointer-events: auto; }
+        .modal { opacity: 0; pointer-events: none; transition: opacity 0.3s ease; position: absolute; inset: 0; background: rgba(0,0,0,0.85); display: flex; justify-content: center; align-items: center; z-index: 50; }
+        .modal.active { opacity: 1; pointer-events: auto; }
+        #loading-screen { position: fixed; inset: 0; background: #111; display: flex; flex-direction: column; justify-content: center; align-items: center; z-index: 100; color: white; transition: opacity 0.5s; }
+    </style>
+</head>
+<body oncontextmenu="return false;">
+
+    <div id="loading-screen">
+        <div class="text-2xl mb-4">Loading Character...</div>
+        <div class="w-48 h-1 bg-zinc-800 rounded-full overflow-hidden">
+            <div id="load-progress" class="h-full bg-blue-500 w-0 transition-all"></div>
+        </div>
+    </div>
+
+    <canvas id="gameCanvas" class="w-full h-full block"></canvas>
+
+    <div id="ui-layer" class="flex flex-col justify-between p-6">
+        <div class="bg-black/60 p-4 rounded-lg border border-white/10 text-zinc-200 shadow-xl w-64 pointer-events-auto">
+            <div class="text-xs text-zinc-400 mb-2">CHARACTER CONTROLS</div>
+            <div class="text-sm font-mono">WASD to Move<br>Right-Click to Orbit<br>Scroll to Zoom</div>
+        </div>
+    </div>
+
+    <script>
+        let scene, camera, renderer, characterGroup, mixer;
+        let collidableMeshList = [];
+        const keys = { w: false, a: false, s: false, d: false };
+        const camState = { zoom: 4, targetZoom: 4, yaw: 0.5, pitch: 0.6, isRotating: false, mouseX: 0, mouseY: 0 };
+
+        function init3D() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x111111);
+            
+            camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gameCanvas'), antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+
+            scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+            const sun = new THREE.DirectionalLight(0xffffff, 0.8);
+            sun.position.set(5, 10, 5);
+            scene.add(sun);
+
+            characterGroup = new THREE.Group();
+            scene.add(characterGroup);
+
+            createTrain();
+            loadCharacter(); // Load your PMX here
+
+            window.addEventListener('resize', onWindowResize);
+            window.addEventListener('keydown', (e) => { if(keys.hasOwnProperty(e.key.toLowerCase())) keys[e.key.toLowerCase()] = true; });
+            window.addEventListener('keyup', (e) => { if(keys.hasOwnProperty(e.key.toLowerCase())) keys[e.key.toLowerCase()] = false; });
+            window.addEventListener('wheel', (e) => { camState.targetZoom = Math.max(1.5, Math.min(10, camState.targetZoom + e.deltaY * 0.005)); }, { passive: true });
+            window.addEventListener('mousedown', (e) => { if (e.button === 2) camState.isRotating = true; });
+            window.addEventListener('mousemove', (e) => {
+                if (camState.isRotating) {
+                    camState.yaw -= (e.clientX - camState.mouseX) * 0.005;
+                    camState.pitch = Math.max(0.1, Math.min(Math.PI/2 - 0.1, camState.pitch + (e.clientY - camState.mouseY) * 0.005));
+                }
+                camState.mouseX = e.clientX; camState.mouseY = e.clientY;
+            });
+            window.addEventListener('mouseup', () => camState.isRotating = false);
+
+            animate();
+        }
+
+        function loadCharacter() {
+            const loader = new THREE.MMDLoader();
+            
+            /* INSTRUCTIONS:
+               1. Upload your PMX and textures to a public folder (e.g., GitHub Pages).
+               2. Replace the URL below with your .pmx link.
+               Note: The textures must be in the same relative path as defined in the PMX.
+            */
+            const modelUrl = 'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r128/examples/models/mmd/miku/miku_v2.pmx';
+
+            loader.load(
+                modelUrl,
+                function (mmd) {
+                    const mesh = mmd;
+                    mesh.castShadow = true;
+                    // Scale down if the model is too big (MMD models vary wildly)
+                    mesh.scale.setScalar(0.1); 
+                    characterGroup.add(mesh);
+                    
+                    document.getElementById('loading-screen').style.opacity = '0';
+                    setTimeout(() => document.getElementById('loading-screen').remove(), 500);
+                },
+                function (xhr) {
+                    const percent = (xhr.loaded / xhr.total) * 100;
+                    document.getElementById('load-progress').style.width = percent + '%';
+                },
+                function (error) {
+                    console.error('Error loading MMD:', error);
+                    // Fallback character if load fails
+                    const fallback = new THREE.Mesh(new THREE.BoxGeometry(0.4, 1.2, 0.4), new THREE.MeshStandardMaterial({color: 0x00ff00}));
+                    fallback.position.y = 0.6;
+                    characterGroup.add(fallback);
+                    document.getElementById('loading-screen').remove();
+                }
+            );
+        }
+
+        function createTrain() {
+            const mat = new THREE.MeshStandardMaterial({ color: 0x333333 });
+            const floor = new THREE.Mesh(new THREE.BoxGeometry(4, 0.2, 6), mat);
+            floor.position.y = -0.1; scene.add(floor);
+
+            const wallR = new THREE.Mesh(new THREE.BoxGeometry(0.2, 3, 6), mat);
+            wallR.position.set(2, 1.5, 0); scene.add(wallR);
+            collidableMeshList.push(wallR);
+
+            const wallBack = new THREE.Mesh(new THREE.BoxGeometry(4, 3, 0.2), mat);
+            wallBack.position.set(0, 1.5, 3); scene.add(wallBack);
+            collidableMeshList.push(wallBack);
+
+            const roof = new THREE.Mesh(new THREE.BoxGeometry(4, 0.2, 6), mat);
+            roof.position.y = 3; scene.add(roof);
+            collidableMeshList.push(roof);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (characterGroup) {
+                let moveX = 0, moveZ = 0;
+                if (keys.w) moveZ -= 1; if (keys.s) moveZ += 1;
+                if (keys.a) moveX -= 1; if (keys.d) moveX += 1;
+
+                if (moveX || moveZ) {
+                    const angle = Math.atan2(moveX, moveZ);
+                    characterGroup.rotation.y = angle;
+                    const nextX = characterGroup.position.x + Math.sin(angle) * 0.05;
+                    const nextZ = characterGroup.position.z + Math.cos(angle) * 0.05;
+                    if (Math.abs(nextX) < 1.8) characterGroup.position.x = nextX;
+                    if (Math.abs(nextZ) < 2.8) characterGroup.position.z = nextZ;
+                }
+
+                // Camera Logic with Collision
+                const charHead = characterGroup.position.clone().add(new THREE.Vector3(0, 1.2, 0));
+                camState.zoom += (camState.targetZoom - camState.zoom) * 0.1;
+                
+                const offset = new THREE.Vector3(
+                    Math.sin(camState.yaw) * Math.cos(camState.pitch) * camState.zoom,
+                    Math.sin(camState.pitch) * camState.zoom,
+                    Math.cos(camState.yaw) * Math.cos(camState.pitch) * camState.zoom
+                );
+                
+                let targetPos = charHead.clone().add(offset);
+                const ray = new THREE.Raycaster(charHead, offset.clone().normalize(), 0.1, camState.zoom);
+                const hits = ray.intersectObjects(collidableMeshList);
+                if (hits.length > 0) targetPos = hits[0].point.sub(offset.clone().normalize().multiplyScalar(0.2));
+
+                camera.position.lerp(targetPos, 0.1);
+                camera.lookAt(charHead);
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        window.onload = init3D;
+    </script>
+</body>
+</html>
